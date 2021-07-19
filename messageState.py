@@ -6,12 +6,14 @@ class Node:
         self.value: MessageState = value
         self.next: Node = None
 
+
 class MessageState:
-    def __init__(self, author, query, response, message):
+    def __init__(self, author, query, response, message, offset):
         self.author: discord.User = author
         self.query: str = query
         self.response: dict = response
         self.message: discord.Message = message
+        self.offset = offset
 
 
 class MessageCache:

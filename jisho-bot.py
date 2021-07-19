@@ -53,7 +53,7 @@ __EMBED_HELP_FIELD_UTILITY_VALUE = '`!jisho help` - Shows this help message\n' \
 
 
 __EMBED_SEARCH_TITLE_STEM = 'jisho.org search results for '
-__EMBED_SEARCH_DESCRIPTION_STEM = '*Showing up to the first five results*\n'
+__EMBED_SEARCH_DESCRIPTION_STEM = '*Showing results {start} to {end} (out of {total})*\n'
 __EMBED_SEARCH_DESCRIPTION_NORESULTS = '*Sorry, no results were found*'
 __EMBED_SEARCH_URL_STEM = 'https://jisho.org/search/'
 __EMBED_SEARCH_FOOTER = 'Use the reacts for more actions (work in progress)\nPowered by jisho.org\'s beta API'
@@ -116,7 +116,7 @@ async def on_message(message):
             else:
                 await _addreactions_few(bot_message)
 
-            cache.insert(MessageState(message.author, query, response_json, bot_message))
+            cache.insert(MessageState(message.author, query, response_json, bot_message, 0))
 
         # Command - help - shows help message
         if message.content.startswith(__COMMAND_PREFIX + ' ' + __COMMAND_HELP):
@@ -152,19 +152,44 @@ async def on_reaction_add(reaction, user):
     if client.user not in await reaction.users().flatten():
         return
 
-    # Remove messages that *any* user reacts ❌ to  fixme only original user
-    if reaction.emoji == '❌':
-        await reaction.message.delete()
+    try:
+        # Remove messages that *any* user reacts ❌ to  fixme only original user
+        if reaction.emoji == '❌':
+            await reaction.message.delete()
 
-    # Show first result when 1 is selected
-    if reaction.emoji in ('1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣'):
-        number = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣'].index(reaction.emoji)
-        messagestate = cache[reaction.message]
-        new_embed = _command_details_fromjson(number, messagestate.query, messagestate.response)
-        await reaction.message.edit(embed=new_embed)
-        await reaction.message.clear_reactions()  # fixme another way to do this?
-        await _addreactions_few(reaction.message)
-        cache.remove(reaction.message)
+        # Show result details
+        if reaction.emoji in ('1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣'):
+            number = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣'].index(reaction.emoji)
+            messagestate = cache[reaction.message]
+            new_embed = _command_details_fromjson(number + messagestate.offset, messagestate.query, messagestate.response)
+            await reaction.message.edit(embed=new_embed)
+            # await _removereactions_selection(reaction.message)
+            await reaction.message.clear_reactions()  # fixme another way to do this?
+            await _addreactions_few(reaction.message)
+            cache.remove(reaction.message)
+
+        # Page right
+        if reaction.emoji == '▶':
+            messagestate = cache[reaction.message]
+            if len(messagestate.response['data']) <= messagestate.offset + 5:
+                return
+            cache[reaction.message].offset += 5
+            new_embed, _, _ = _command_search_fromjson(messagestate.query, messagestate.response, messagestate.offset)
+            await reaction.message.edit(embed=new_embed)
+            await reaction.message.remove_reaction('▶', user)
+
+        # Page left
+        if reaction.emoji == '◀':
+            messagestate = cache[reaction.message]
+            if messagestate.offset - 5 < 0:
+                return
+            cache[reaction.message].offset -= 5
+            new_embed, _, _ = _command_search_fromjson(messagestate.query, messagestate.response, messagestate.offset)
+            await reaction.message.edit(embed=new_embed)
+            await reaction.message.remove_reaction('◀', user)
+
+    except Exception as e:
+        await _report_error(reaction.message.channel, str(e))
 
 
 async def _addreactions_few(message):
@@ -181,6 +206,15 @@ async def _addreactions_full(message):
     await message.add_reaction('▶')
     await message.add_reaction('❌')
 
+# clearing all seems to work better
+# async def _removereactions_selection(message):
+#     await message.remove_reaction('◀', client.user)
+#     await message.remove_reaction('1️⃣', client.user)
+#     await message.remove_reaction('2️⃣', client.user)
+#     await message.remove_reaction('3️⃣', client.user)
+#     await message.remove_reaction('4️⃣', client.user)
+#     await message.remove_reaction('5️⃣', client.user)
+#     await message.remove_reaction('▶', client.user)
 
 def command_help():
     # Build embed
@@ -203,12 +237,17 @@ def command_search(search_query):
     if response_json['meta']['status'] != __STATUS_OK:
         raise ValueError(f'{__ERROR_BADSTATUS_STEM}{response_json["meta"]["status"]}')
 
+    return _command_search_fromjson(search_query, response_json, 0)
+
+
+def _command_search_fromjson(search_query, response_json, start_from):
     # Build response message
-    reply_message = __EMBED_SEARCH_DESCRIPTION_STEM
     results_json = response_json["data"]
+    reply_message = __EMBED_SEARCH_DESCRIPTION_STEM.format(start=start_from + 1, end=min(start_from + 5, len(results_json)), total=len(results_json))
+
     try:
-        for i in range(5):
-            reply_message += f'{__EMOJI_NUMS[i + 1]}: {_form_readable(results_json[i]["japanese"][0])}\n'
+        for i in range(start_from, start_from + 5):
+            reply_message += f'{__EMOJI_NUMS[i % 5 + 1]}: {_form_readable(results_json[i]["japanese"][0])}\n'
     except IndexError:
         pass
 
