@@ -6,6 +6,7 @@ import discord
 import requests
 import urllib
 import sys
+from messageState import *
 from discord.ext import commands
 
 # "Constants"
@@ -77,6 +78,8 @@ __EMBED_ERROR_FOOTER = 'Please report any unexpected errors'
 
 client = discord.Client()
 
+cache = MessageCacheNaive()
+
 # # Bot commands setup (?)
 # intents = discord.Intents.default()
 # intents.members = True
@@ -85,7 +88,7 @@ client = discord.Client()
 
 @client.event
 async def on_ready():
-    print('Logged on as {0}!'.format(client.user))  # fixme print logging
+    _log_message('Logged on as {0}!'.format(client.user))
 
 
 @client.event
@@ -95,23 +98,31 @@ async def on_message(message):
         return
 
     if message.content.startswith(__COMMAND_PREFIX):
-        print('Message from {0.author}: {0.content}'.format(message))  # fixme print logging
+        _log_message('Message from {0.author}: {0.content}'.format(message))
 
     try:
         # Testing - respond to messages "!jisho ping" with "pong"
         if message.content == __COMMAND_PREFIX + ' ' + __COMMAND_PING:
-            await command_ping(message)
-            return
+            await message.channel.send(command_ping())
 
         # Command - search - look for responses from jisho.org api
         if message.content.startswith(__COMMAND_PREFIX + ' ' + __COMMAND_SEARCH + ' '):
             query = message.content[len(__COMMAND_PREFIX + ' ' + __COMMAND_SEARCH + ' '):]
 
-            await command_search(message, query)
+            embed, response_json, found_results = command_search(query)
+            bot_message = await message.channel.send(embed=embed)
+            if found_results:
+                await _addreactions_full(bot_message)
+            else:
+                await _addreactions_few(bot_message)
+
+            cache.insert(MessageState(message.author, query, response_json, bot_message))
 
         # Command - help - shows help message
         if message.content.startswith(__COMMAND_PREFIX + ' ' + __COMMAND_HELP):
-            await command_help(message)
+            embed = command_help()
+            bot_message = await message.channel.send(embed=embed)
+            await _addreactions_few(bot_message)
 
         # Command - details - show result details
         if message.content.startswith(__COMMAND_PREFIX + ' ' + __COMMAND_DETAILS + ' '):
@@ -119,7 +130,9 @@ async def on_message(message):
             number = int(query.split()[0]) - 1
             query = query[len(query.split()[0]):].strip()
 
-            await command_details(message, number, query)
+            embed = command_details(number, query)
+            bot_message = await message.channel.send(embed=embed)
+            await _addreactions_few(bot_message)
 
     except Exception as e:
         await _report_error(message.channel, str(e))
@@ -143,8 +156,33 @@ async def on_reaction_add(reaction, user):
     if reaction.emoji == '❌':
         await reaction.message.delete()
 
+    # Show first result when 1 is selected
+    if reaction.emoji in ('1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣'):
+        number = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣'].index(reaction.emoji)
+        messagestate = cache[reaction.message]
+        new_embed = _command_details_fromjson(number, messagestate.query, messagestate.response)
+        await reaction.message.edit(embed=new_embed)
+        await reaction.message.clear_reactions()  # fixme another way to do this?
+        await _addreactions_few(reaction.message)
+        cache.remove(reaction.message)
 
-async def command_help(message):
+
+async def _addreactions_few(message):
+    await message.add_reaction('❌')
+
+
+async def _addreactions_full(message):
+    await message.add_reaction('◀')
+    await message.add_reaction('1️⃣')
+    await message.add_reaction('2️⃣')
+    await message.add_reaction('3️⃣')
+    await message.add_reaction('4️⃣')
+    await message.add_reaction('5️⃣')
+    await message.add_reaction('▶')
+    await message.add_reaction('❌')
+
+
+def command_help():
     # Build embed
     embed_dict = {
         'title':    __EMBED_HELP_TITLE,
@@ -155,13 +193,10 @@ async def command_help(message):
                      {'name': __EMBED_HELP_FIELD_LOOKUP_NAME, 'value': __EMBED_HELP_FIELD_LOOKUP_VALUE, 'inline': False},
                      {'name': __EMBED_HELP_FIELD_UTILITY_NAME, 'value': __EMBED_HELP_FIELD_UTILITY_VALUE, 'inline': False}]
     }
-    embed = discord.Embed.from_dict(embed_dict)
-
-    bot_message = await message.channel.send(embed=embed)
-    await bot_message.add_reaction('❌')
+    return discord.Embed.from_dict(embed_dict)
 
 
-async def command_search(message, search_query):
+def command_search(search_query):
     # Communicate with jisho's beta API
     response_json = requests.get(__API_URL + search_query).json()
 
@@ -191,21 +226,11 @@ async def command_search(message, search_query):
         'thumbnail':    {'url': __EMBED_THUMBNAIL_JISHO},
         # 'author':       {'name': __EMBED_AUTHOR_NAME, 'url': __EMBED_AUTHOR_URL}  # this looks better without, honestly
     }
-    embed = discord.Embed.from_dict(embed_dict)
 
-    bot_message = await message.channel.send(embed=embed)
-    if len(results_json):
-        await bot_message.add_reaction('◀')
-        await bot_message.add_reaction('1️⃣')
-        await bot_message.add_reaction('2️⃣')
-        await bot_message.add_reaction('3️⃣')
-        await bot_message.add_reaction('4️⃣')
-        await bot_message.add_reaction('5️⃣')
-        await bot_message.add_reaction('▶')
-    await bot_message.add_reaction('❌')
+    return discord.Embed.from_dict(embed_dict), response_json, bool(len(results_json))
 
 
-async def command_details(message, number, search_query):
+def command_details(number, search_query):
     # Communicate with jisho's beta API
     response_json = requests.get(__API_URL + search_query).json()
 
@@ -216,6 +241,11 @@ async def command_details(message, number, search_query):
         response_json["data"][number]
     except IndexError:
         raise IndexError(f'{__ERROR_INDEXERROR_STEM}{number + 1}')
+
+    return _command_details_fromjson(number, search_query, response_json)
+
+
+def _command_details_fromjson(number, search_query, response_json):
 
     details_json = response_json["data"][number]
 
@@ -249,7 +279,7 @@ async def command_details(message, number, search_query):
         if def_json['antonyms']:
             extras += ['Antonym: ' + ', '.join(def_json['antonyms'])]
         if def_json['source']:  # todo find example of this
-            print(f'Found example of source extra, in result {number} for {search_query}')
+            _log_message(f'Found example of source extra, in result {number} for {search_query}')
             extras += ['Source: ' + ', '.join(def_json['source'])]
         if def_json['info']:  # used for random notes (see 行く, definition 2)
             extras += [', '.join(def_json['info'])]
@@ -280,7 +310,7 @@ async def command_details(message, number, search_query):
     for entry in details_json['tags']:
         # Assuming all tags are WaniKani tags
         if not entry.startswith('wanikani'):
-            print(f'Unexpected tag: {entry}')
+            _log_message(f'Unexpected tag: {entry}')
             continue
 
         wk_level = int(entry[len('wanikani'):])
@@ -313,14 +343,11 @@ async def command_details(message, number, search_query):
                          {'name': (__EMBED_DETAILS_FIELD_DEFINITIONS_NAME, __EMBED_DETAILS_FIELD_DEFINITIONSTRUNC_NAME)[definitions_truncated], 'value': definitions, 'inline': False}]
                         + ([], [{'name': __EMBED_DETAILS_FIELD_OTHERFORMS_NAME, 'value': other_forms, 'inline': False}])[many_forms]
     }
-    embed = discord.Embed.from_dict(embed_dict)
-
-    bot_message = await message.channel.send(embed=embed)
-    await bot_message.add_reaction('❌')
+    return discord.Embed.from_dict(embed_dict)
 
 
-async def command_ping(message):
-    await message.channel.send(__PING_RESPONSE)
+def command_ping():
+    return __PING_RESPONSE
     # No X react here on purpose, since this is a text-only message
 
 
@@ -345,7 +372,7 @@ async def _report_error(channel, error_message):  # type: (discord.TextChannel, 
     :param error_message: reported error
     :return:
     """
-    print(error_message, file=sys.stderr)
+    _log_error(error_message)
 
     embed_dict = {
         'title':        __EMBED_ERROR_TITLE,
@@ -359,6 +386,23 @@ async def _report_error(channel, error_message):  # type: (discord.TextChannel, 
     bot_message = await channel.send(embed=embed)
     await bot_message.add_reaction('❌')
 
+
+def _log_message(message):  # type: (str) -> None
+    """
+    Logs a message to stdout  # todo change to somethine else other than stdout
+    :param message: message to log
+    :return:
+    """
+    print(message)
+
+
+def _log_error(message):  # type: (str) -> None
+    """
+    Logs an error to stderr # todo change to something else other than console
+    :param message: error message to log
+    :return:
+    """
+    print(message, file=sys.stderr)
 
 # @bot.command(description="Search jisho.org for results")
 # async def search(ctx, query):
