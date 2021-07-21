@@ -9,28 +9,54 @@ import sys
 from messageState import *
 from discord.ext import commands
 
+# todo list
+#  cache improvements
+#  command shortcuts
+#  use local image
+#  slash commands?
+#  work in dms
+
 # "Constants"
 __TOKEN_FILENAME = 'token.txt'
 __BOT_DESC = 'wip bot for jisho.org'
 __JISHOHOME_URL = 'https://jisho.org'
-__API_URL = 'https://jisho.org/api/v1/search/words?keyword='
+__API_SEARCH_STEM = 'https://jisho.org/api/v1/search/words?keyword={query}'
+__RESULTS_PER_PAGE = 5
 __STATUS_OK = 200
 __EMOJI_NUMS = {1: ':one:', 2: ':two:', 3: ':three:', 4: ':four:', 5: ':five:'}
 __PING_RESPONSE = ':ping_pong: Pong! :ping_pong:'
-__ERROR_BADSTATUS_STEM = 'Bad response status - expected 200 OK, got '
-__ERROR_INDEXERROR_STEM = 'Unable to find the search result with number '
+__ERROR_BADSTATUS_STEM = 'Bad response status - expected 200 OK, got {status} instead'
+__ERROR_INDEXERROR_STEM = 'Unable to find result number {number} for {query}'
+
+# Reaction emojis
+__REACT_ARROW_LEFT = '◀'
+__REACT_ARROW_RIGHT = '▶'
+__REACT_NUM_ONE = '1️⃣'
+__REACT_NUM_TWO = '2️⃣'
+__REACT_NUM_THREE = '3️⃣'
+__REACT_NUM_FOUR = '4️⃣'
+__REACT_NUM_FIVE = '5️⃣'
+__REACT_X = '❌'
+__REACTS_ARROWS = [__REACT_ARROW_LEFT, __REACT_ARROW_RIGHT]
+__REACTS_NUMS = [__REACT_NUM_ONE, __REACT_NUM_TWO, __REACT_NUM_THREE, __REACT_NUM_FOUR, __REACT_NUM_FIVE]
+__REACTS_ALL = __REACTS_ARROWS + __REACTS_NUMS + [__REACT_X]
 
 # Command strings
 __COMMAND_PREFIX = '!jisho'
+
 __COMMAND_HELP = 'help'
+__COMMAND_HELP_DESC = f'`{__COMMAND_PREFIX} {__COMMAND_HELP}` - Shows this help message'
+
 __COMMAND_SEARCH = 'search'
+__COMMAND_SEARCH_DESC = f'`{__COMMAND_PREFIX} {__COMMAND_SEARCH} <query>` - Searches jisho.org for `query`, shows first five results'
+
 __COMMAND_DETAILS = 'details'
+__COMMAND_DETAILS_DESC = f'`{__COMMAND_PREFIX} {__COMMAND_DETAILS} <num> <query>` - Shows details for the `num`th result for `query`'
+
 __COMMAND_PING = 'ping'
+__COMMAND_PING_DESC = f'`{__COMMAND_PREFIX} {__COMMAND_PING}` - Pings jisho-bot to respond with a pong'
 
 # Embed constants
-# __EMBED_AUTHOR_NAME = 'jisho-bot'
-# __EMBED_AUTHOR_URL = 'https://jisho.org'
-
 __EMBED_THUMBNAIL_JISHO = 'https://assets.jisho.org/assets/touch-icon-017b99ca4bfd11363a97f66cc4c00b1667613a05e38d08d858aa5e2a35dce055.png'
 
 __EMBED_COLOR_JISHO = 0x3edd00
@@ -45,32 +71,31 @@ __EMBED_HELP_FIELD_ABOUT_NAME = '__About__'
 __EMBED_HELP_FIELD_ABOUT_VALUE = 'jisho-bot is currently a work-in-progress bot that searches jisho.org directly ' \
                                  + f'from Discord, powered by [jisho.org]({__JISHOHOME_URL})\'s beta API.'
 __EMBED_HELP_FIELD_LOOKUP_NAME = '__Lookup commands__'
-__EMBED_HELP_FIELD_LOOKUP_VALUE = '`!jisho search <query>` - Searches jisho.org for `query`, shows first five results\n'\
-                                  + '`!jisho details <num> <query>` - Shows details for the `num`th result for `query`'
+__EMBED_HELP_FIELD_LOOKUP_VALUE = '\n'.join([__COMMAND_SEARCH_DESC, __COMMAND_DETAILS_DESC])
 __EMBED_HELP_FIELD_UTILITY_NAME = '__Utility commands__'
-__EMBED_HELP_FIELD_UTILITY_VALUE = '`!jisho help` - Shows this help message\n' \
-                                   + '`!jisho ping` - Pings jisho-bot to respond with a pong'
+__EMBED_HELP_FIELD_UTILITY_VALUE = '\n'.join([__COMMAND_HELP_DESC, __COMMAND_PING_DESC])
 
 
-__EMBED_SEARCH_TITLE_STEM = 'jisho.org search results for '
+__EMBED_SEARCH_TITLE_STEM = 'jisho.org search results for {query}'
 __EMBED_SEARCH_DESCRIPTION_STEM = '*Showing results {start} to {end} (out of {total})*\n'
 __EMBED_SEARCH_DESCRIPTION_NORESULTS = '*Sorry, no results were found*'
-__EMBED_SEARCH_URL_STEM = 'https://jisho.org/search/'
-__EMBED_SEARCH_FOOTER = 'Use the reacts for more actions (work in progress)\nPowered by jisho.org\'s beta API'
+__EMBED_SEARCH_RESULT_FORMAT = '{emoji}: {result}\n'
+__EMBED_SEARCH_URL_STEM = 'https://jisho.org/search/{query}'
+__EMBED_SEARCH_FOOTER = 'Use the reacts for more actions\nPowered by jisho.org\'s beta API'
 
-__EMBED_DETAILS_TITLE_STEM = 'jisho.org entry for '
-__EMBED_DETAILS_URL_STEM = 'https://jisho.org/word/'
-__EMBED_DETAILS_ATTRIBUTION_STEM = 'jisho.org entry data from '
-__EMBED_DETAILS_FOOTER_ENDER = 'Powered by jisho.org\'s beta API'
+__EMBED_DETAILS_TITLE_STEM = 'jisho.org entry for {slug}'
+__EMBED_DETAILS_URL_STEM = 'https://jisho.org/word/{slug}'
+__EMBED_DETAILS_FOOTER_STEM = 'jisho.org entry data from {sources}\nPowered by jisho.org\'s beta API'
 __EMBED_DETAILS_FIELD_WORD_NAME = '__Word__'
 __EMBED_DETAILS_FIELD_TAGS_NAME = '__Tags__'
 __EMBED_DETAILS_FIELD_DEFINITIONS_NAME = '__Definition(s)__'
 __EMBED_DETAILS_FIELD_DEFINITIONSTRUNC_NAME = '__Defintions(s) *(some results have been truncated)*__'
 __EMBED_DETAILS_FIELD_OTHERFORMS_NAME = '__Other forms__'
 __EMBED_DETAILS_TAGS_COMMON = 'Common word'
-__EMBED_DETAILS_TAGS_JLPTLEVEL_STEM = 'JLPT N'
-__EMBED_DETAILS_TAGS_WKURL_STEM = 'https://www.wanikani.com/vocabulary/'
-__EMBED_DETAILS_TAGS_WKLEVEL_STEM = 'WaniKani level '
+__EMBED_DETAILS_TAGS_JLPTLEVEL_STEM = 'JLPT N{level}'
+__EMBED_DETAILS_TAGS_WKURL_STEM = 'https://www.wanikani.com/vocabulary/{vocab}'
+__EMBED_DETAILS_TAGS_WKLEVEL_STEM = 'WaniKani level {level}'
+__EMBED_DETAILS_TAGS_WANIKANI_STEM = f'[{__EMBED_DETAILS_TAGS_WKLEVEL_STEM}]({__EMBED_DETAILS_TAGS_WKURL_STEM})'
 __EMBED_DETAILS_TAGS_NONE = '*None*'
 
 __EMBED_ERROR_TITLE = 'An error has occurred'
@@ -112,7 +137,7 @@ async def on_message(message):
             embed, response_json, found_results = command_search(query)
             bot_message = await message.channel.send(embed=embed)
             if found_results:
-                await _addreactions_full(bot_message)
+                await _addreactions_many(bot_message, response_json)
             else:
                 await _addreactions_few(bot_message)
 
@@ -135,7 +160,7 @@ async def on_message(message):
             await _addreactions_few(bot_message)
 
     except Exception as e:
-        await _report_error(message.channel, str(e))
+        await _report_error(message.channel, repr(e))
 
 
 @client.event
@@ -154,12 +179,12 @@ async def on_reaction_add(reaction, user):
 
     try:
         # Remove messages that *any* user reacts ❌ to  fixme only original user
-        if reaction.emoji == '❌':
+        if reaction.emoji == __REACT_X:
             await reaction.message.delete()
 
         # Show result details
-        if reaction.emoji in ('1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣'):
-            number = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣'].index(reaction.emoji)
+        if reaction.emoji in __REACTS_NUMS:
+            number = __REACTS_NUMS.index(reaction.emoji)
             messagestate = cache[reaction.message]
             new_embed = _command_details_fromjson(number + messagestate.offset, messagestate.query, messagestate.response)
             await reaction.message.edit(embed=new_embed)
@@ -168,60 +193,46 @@ async def on_reaction_add(reaction, user):
             await _addreactions_few(reaction.message)
             cache.remove(reaction.message)
 
-        # Page right
-        if reaction.emoji == '▶':
+        # Arrow left/right
+        if reaction.emoji in __REACTS_ARROWS:
+            delta = (-__RESULTS_PER_PAGE, __RESULTS_PER_PAGE)[reaction.emoji == __REACT_ARROW_RIGHT]
             messagestate = cache[reaction.message]
-            if len(messagestate.response['data']) <= messagestate.offset + 5:
+            if not 0 <= messagestate.offset + delta < len(messagestate.response['data']):
                 return
-            cache[reaction.message].offset += 5
+            cache[reaction.message].offset += delta
             new_embed, _, _ = _command_search_fromjson(messagestate.query, messagestate.response, messagestate.offset)
             await reaction.message.edit(embed=new_embed)
-            await reaction.message.remove_reaction('▶', user)
-
-        # Page left
-        if reaction.emoji == '◀':
-            messagestate = cache[reaction.message]
-            if messagestate.offset - 5 < 0:
-                return
-            cache[reaction.message].offset -= 5
-            new_embed, _, _ = _command_search_fromjson(messagestate.query, messagestate.response, messagestate.offset)
-            await reaction.message.edit(embed=new_embed)
-            await reaction.message.remove_reaction('◀', user)
+            await reaction.message.remove_reaction(reaction.emoji, user)
 
     except Exception as e:
-        await _report_error(reaction.message.channel, str(e))
+        await _report_error(reaction.message.channel, repr(e))
 
 
 async def _addreactions_few(message):
-    await message.add_reaction('❌')
+    await message.add_reaction(__REACT_X)
 
 
-async def _addreactions_full(message):
-    await message.add_reaction('◀')
-    await message.add_reaction('1️⃣')
-    await message.add_reaction('2️⃣')
-    await message.add_reaction('3️⃣')
-    await message.add_reaction('4️⃣')
-    await message.add_reaction('5️⃣')
-    await message.add_reaction('▶')
-    await message.add_reaction('❌')
+async def _addreactions_many(message, response_json):
+    results = _get_results_list(response_json)
+    many_pages = len(results) > __RESULTS_PER_PAGE
 
-# clearing all seems to work better
-# async def _removereactions_selection(message):
-#     await message.remove_reaction('◀', client.user)
-#     await message.remove_reaction('1️⃣', client.user)
-#     await message.remove_reaction('2️⃣', client.user)
-#     await message.remove_reaction('3️⃣', client.user)
-#     await message.remove_reaction('4️⃣', client.user)
-#     await message.remove_reaction('5️⃣', client.user)
-#     await message.remove_reaction('▶', client.user)
+    if many_pages:
+        await message.add_reaction(__REACT_ARROW_LEFT)
+
+    for reaction in __REACTS_NUMS[:min(5, len(results))]:
+        await message.add_reaction(reaction)
+
+    if many_pages:
+        await message.add_reaction(__REACT_ARROW_RIGHT)
+
+    await message.add_reaction(__REACT_X)
+
 
 def command_help():
     # Build embed
     embed_dict = {
         'title':    __EMBED_HELP_TITLE,
         'color':    __EMBED_COLOR_BOT,
-        # 'author':   {'name': __EMBED_AUTHOR_NAME, 'url': __EMBED_AUTHOR_URL},
         'footer':   {'text': __EMBED_HELP_FOOTER},
         'fields':   [{'name': __EMBED_HELP_FIELD_ABOUT_NAME, 'value': __EMBED_HELP_FIELD_ABOUT_VALUE, 'inline': False},
                      {'name': __EMBED_HELP_FIELD_LOOKUP_NAME, 'value': __EMBED_HELP_FIELD_LOOKUP_VALUE, 'inline': False},
@@ -232,24 +243,23 @@ def command_help():
 
 def command_search(search_query):
     # Communicate with jisho's beta API
-    response_json = requests.get(__API_URL + search_query).json()
-
-    if response_json['meta']['status'] != __STATUS_OK:
-        raise ValueError(f'{__ERROR_BADSTATUS_STEM}{response_json["meta"]["status"]}')
+    response_json = _api_call(search_query)
 
     return _command_search_fromjson(search_query, response_json, 0)
 
 
 def _command_search_fromjson(search_query, response_json, start_from):
-    # Build response message
-    results_json = response_json["data"]
-    reply_message = __EMBED_SEARCH_DESCRIPTION_STEM.format(start=start_from + 1, end=min(start_from + 5, len(results_json)), total=len(results_json))
+    # Header for search results list
+    results_json = _get_results_list(response_json)
+    end_at = min(start_from + __RESULTS_PER_PAGE, len(results_json))
+    reply_message = __EMBED_SEARCH_DESCRIPTION_STEM.format(start=start_from + 1, end=end_at, total=len(results_json))
 
-    try:
-        for i in range(start_from, start_from + 5):
-            reply_message += f'{__EMOJI_NUMS[i % 5 + 1]}: {_form_readable(results_json[i]["japanese"][0])}\n'
-    except IndexError:
-        pass
+    # Format each line with the react emoji as well as the kanji + pronunciation (if possible)
+    for i in range(start_from, end_at):
+        emoji = __EMOJI_NUMS[i % __RESULTS_PER_PAGE + 1]
+        readings = _get_readings_list(results_json[i])
+        readable_word = _form_readable(readings[0])
+        reply_message += __EMBED_SEARCH_RESULT_FORMAT.format(emoji=emoji, result=readable_word)
 
     # Change response message if there are no results
     if not len(results_json):
@@ -257,13 +267,12 @@ def _command_search_fromjson(search_query, response_json, start_from):
 
     # Build embed
     embed_dict = {
-        'title':        f'{__EMBED_SEARCH_TITLE_STEM}{search_query}',
+        'title':        __EMBED_SEARCH_TITLE_STEM.format(query=search_query),
         'description':  reply_message.strip(),
-        'url':          f'{__EMBED_SEARCH_URL_STEM}{urllib.parse.quote(search_query, safe="")}',
+        'url':          __EMBED_SEARCH_URL_STEM.format(query=urllib.parse.quote(search_query, safe="")),
         'color':        __EMBED_COLOR_JISHO,
         'footer':       {'text': __EMBED_SEARCH_FOOTER},
         'thumbnail':    {'url': __EMBED_THUMBNAIL_JISHO},
-        # 'author':       {'name': __EMBED_AUTHOR_NAME, 'url': __EMBED_AUTHOR_URL}  # this looks better without, honestly
     }
 
     return discord.Embed.from_dict(embed_dict), response_json, bool(len(results_json))
@@ -271,25 +280,21 @@ def _command_search_fromjson(search_query, response_json, start_from):
 
 def command_details(number, search_query):
     # Communicate with jisho's beta API
-    response_json = requests.get(__API_URL + search_query).json()
+    response_json = _api_call(search_query)
 
-    if response_json['meta']['status'] != __STATUS_OK:
-        raise ValueError(f'{__ERROR_BADSTATUS_STEM}{response_json["meta"]["status"]}')
-
-    try:
-        response_json["data"][number]
-    except IndexError:
-        raise IndexError(f'{__ERROR_INDEXERROR_STEM}{number + 1}')
+    if number < 0 or number >= len(_get_results_list(response_json)):
+        raise IndexError(__ERROR_INDEXERROR_STEM.format(number=number + 1, query=search_query))
 
     return _command_details_fromjson(number, search_query, response_json)
 
 
 def _command_details_fromjson(number, search_query, response_json):
 
-    details_json = response_json["data"][number]
+    details_json: dict = _get_results_list(response_json)[number]
+    readings = _get_readings_list(details_json)
 
     # Get kanji (if exists) and reading
-    word = f'{_form_readable(details_json["japanese"][0])}\n'
+    word = _form_readable(readings[0]) + '\n'
 
     # Get definitions
     definitions_truncated = False
@@ -336,6 +341,7 @@ def _command_details_fromjson(number, search_query, response_json):
     # Get tags (common, jlpt, wanikani)
     tags = []
 
+    # Check if word is listed as common
     if details_json['is_common']:
         tags += [__EMBED_DETAILS_TAGS_COMMON]
 
@@ -344,39 +350,38 @@ def _command_details_fromjson(number, search_query, response_json):
         max_level = 0
         for level in details_json['jlpt']:
             max_level = max(max_level, int(level[-1]))
-        tags += [f'{__EMBED_DETAILS_TAGS_JLPTLEVEL_STEM}{max_level}']
+        tags += [__EMBED_DETAILS_TAGS_JLPTLEVEL_STEM.format(level=max_level)]
 
+    # Get wanikani levels, assuming all tags are wanikani tags
     for entry in details_json['tags']:
-        # Assuming all tags are WaniKani tags
         if not entry.startswith('wanikani'):
             _log_message(f'Unexpected tag: {entry}')
             continue
 
         wk_level = int(entry[len('wanikani'):])
-        tags += [f'[{__EMBED_DETAILS_TAGS_WKLEVEL_STEM}{wk_level}]({__EMBED_DETAILS_TAGS_WKURL_STEM}{details_json["japanese"][0]["word"]})']  # fixme risky code
+        wk_vocab = details_json["japanese"][0]["word"]  # fixme not guaranteed to always work?
+        tags += [__EMBED_DETAILS_TAGS_WANIKANI_STEM.format(level=wk_level, vocab=wk_vocab)]
 
+    # Default no-tags message
     if not tags:
         tags = [__EMBED_DETAILS_TAGS_NONE]
 
     tags = '\n'.join(tags)
 
     # Get other forms
-    many_forms = len(details_json['japanese']) > 1
-    other_forms = [_form_readable(form) for form in details_json['japanese'][1:]]
-    other_forms = '、'.join(other_forms)
+    many_forms = len(readings) > 1
+    other_forms = '、'.join([_form_readable(form) for form in readings[1:]])
 
     # Get attribution data
     sources = [source for source, value in details_json['attribution'].items() if value]
-    attribution = __EMBED_DETAILS_ATTRIBUTION_STEM + ', '.join(sources)
 
     # Build embed
     embed_dict = {
-        'title':        f'{__EMBED_DETAILS_TITLE_STEM}{details_json["slug"]}',
-        'url':          f'{__EMBED_DETAILS_URL_STEM}{details_json["slug"]}',
+        'title':        __EMBED_DETAILS_TITLE_STEM.format(slug=details_json["slug"]),
+        'url':          __EMBED_DETAILS_URL_STEM.format(slug=details_json["slug"]),
         'color':        __EMBED_COLOR_JISHO,
-        'footer':       {'text': f'{attribution}\n{__EMBED_DETAILS_FOOTER_ENDER}'},
+        'footer':       {'text': __EMBED_DETAILS_FOOTER_STEM.format(sources=', '.join(sources))},
         'thumbnail':    {'url': __EMBED_THUMBNAIL_JISHO},
-        # 'author':       {'name': __EMBED_AUTHOR_NAME, 'url': __EMBED_AUTHOR_URL},  # this looks better without, honestly
         'fields':       [{'name': __EMBED_DETAILS_FIELD_WORD_NAME, 'value': word, 'inline': True},
                          {'name': __EMBED_DETAILS_FIELD_TAGS_NAME, 'value': tags, 'inline': True},
                          {'name': (__EMBED_DETAILS_FIELD_DEFINITIONS_NAME, __EMBED_DETAILS_FIELD_DEFINITIONSTRUNC_NAME)[definitions_truncated], 'value': definitions, 'inline': False}]
@@ -387,7 +392,39 @@ def _command_details_fromjson(number, search_query, response_json):
 
 def command_ping():
     return __PING_RESPONSE
-    # No X react here on purpose, since this is a text-only message
+
+
+def _api_call(query):  # type: (str) -> dict
+    """
+    Helper method to do jisho.org's API call
+    :param query: search query
+    :return: JSON response
+    :raises: ValueError if status code is not 200 OK
+    """
+    response = requests.get(__API_SEARCH_STEM.format(query=query)).json()
+
+    if response['meta']['status'] != __STATUS_OK:
+        raise ValueError(__ERROR_BADSTATUS_STEM.format(status=response["meta"]["status"]))
+
+    return response
+
+
+def _get_results_list(response_json):  # type: (dict) -> list
+    """
+    Helper method to get the list of search results from the response JSON (in case format changes later)
+    :param response_json: response JSON returned from API
+    :return: list of responses
+    """
+    return response_json['data']
+
+
+def _get_readings_list(details_json):  # type: (dict) -> list
+    """
+    Helper method to get the list of readings for a search result
+    :param details_json: search result JSON
+    :return: list of readings (dicts)
+    """
+    return details_json['japanese']
 
 
 def _form_readable(form):  # type: (dict) -> str
