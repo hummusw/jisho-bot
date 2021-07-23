@@ -1,6 +1,7 @@
 # Help from https://discordpy.readthedocs.io/en/stable/
 # Help from https://github.com/Rapptz/discord.py/blob/master/examples/basic_bot.py
 # Help from https://stackoverflow.com/a/1695199/
+import traceback
 
 import discord
 import requests
@@ -10,10 +11,12 @@ from messageState import *
 from discord.ext import commands
 
 # todo list
-#  cache improvements
 #  command shortcuts
 #  use local image
+#  return to search results
+#  timed cache removals
 #  slash commands?
+#  better logging
 #  work in dms
 
 # "Constants"
@@ -27,6 +30,7 @@ __EMOJI_NUMS = {1: ':one:', 2: ':two:', 3: ':three:', 4: ':four:', 5: ':five:'}
 __PING_RESPONSE = ':ping_pong: Pong! :ping_pong:'
 __ERROR_BADSTATUS_STEM = 'Bad response status - expected 200 OK, got {status} instead'
 __ERROR_INDEXERROR_STEM = 'Unable to find result number {number} for {query}'
+__CACHE_MAXSIZE = 10
 
 # Reaction emojis
 __REACT_ARROW_LEFT = '◀'
@@ -103,13 +107,14 @@ __EMBED_ERROR_FOOTER = 'Please report any unexpected errors'
 
 client = discord.Client()
 
-cache = MessageCacheNaive()
+cache = MessageCache(__CACHE_MAXSIZE)
 
 # # Bot commands setup (?)
 # intents = discord.Intents.default()
 # intents.members = True
 #
 # bot = commands.Bot(command_prefix='?', description=__BOT_DESC, intents=intents)
+
 
 @client.event
 async def on_ready():
@@ -137,17 +142,17 @@ async def on_message(message):
             embed, response_json, found_results = command_search(query)
             bot_message = await message.channel.send(embed=embed)
             if found_results:
-                await _addreactions_many(bot_message, response_json)
+                await _reactions_addmany(bot_message, response_json)
             else:
-                await _addreactions_few(bot_message)
+                await _reactions_addfew(bot_message)
 
-            cache.insert(MessageState(message.author, query, response_json, bot_message, 0))
+            await cache.insert(MessageState(message.author, query, response_json, bot_message, 0, _cache_cleanup))
 
         # Command - help - shows help message
         if message.content.startswith(__COMMAND_PREFIX + ' ' + __COMMAND_HELP):
             embed = command_help()
             bot_message = await message.channel.send(embed=embed)
-            await _addreactions_few(bot_message)
+            await _reactions_addfew(bot_message)
 
         # Command - details - show result details
         if message.content.startswith(__COMMAND_PREFIX + ' ' + __COMMAND_DETAILS + ' '):
@@ -157,7 +162,7 @@ async def on_message(message):
 
             embed = command_details(number, query)
             bot_message = await message.channel.send(embed=embed)
-            await _addreactions_few(bot_message)
+            await _reactions_addfew(bot_message)
 
     except Exception as e:
         await _report_error(message.channel, repr(e))
@@ -180,18 +185,23 @@ async def on_reaction_add(reaction, user):
     try:
         # Remove messages that *any* user reacts ❌ to  fixme only original user
         if reaction.emoji == __REACT_X:
+            await cache.remove(reaction.message)
             await reaction.message.delete()
 
         # Show result details
         if reaction.emoji in __REACTS_NUMS:
             number = __REACTS_NUMS.index(reaction.emoji)
             messagestate = cache[reaction.message]
+
+            # Ignore invalid indexes
+            if number + messagestate.offset >= len(_get_results_list(messagestate.response)):
+                return
+
             new_embed = _command_details_fromjson(number + messagestate.offset, messagestate.query, messagestate.response)
             await reaction.message.edit(embed=new_embed)
-            # await _removereactions_selection(reaction.message)
-            await reaction.message.clear_reactions()  # fixme another way to do this?
-            await _addreactions_few(reaction.message)
-            cache.remove(reaction.message)
+            await _reactions_removeall(reaction.message)
+            await _reactions_addfew(reaction.message)
+            # cache.remove(reaction.message)
 
         # Arrow left/right
         if reaction.emoji in __REACTS_ARROWS:
@@ -208,11 +218,11 @@ async def on_reaction_add(reaction, user):
         await _report_error(reaction.message.channel, repr(e))
 
 
-async def _addreactions_few(message):
+async def _reactions_addfew(message):
     await message.add_reaction(__REACT_X)
 
 
-async def _addreactions_many(message, response_json):
+async def _reactions_addmany(message, response_json):
     results = _get_results_list(response_json)
     many_pages = len(results) > __RESULTS_PER_PAGE
 
@@ -226,6 +236,14 @@ async def _addreactions_many(message, response_json):
         await message.add_reaction(__REACT_ARROW_RIGHT)
 
     await message.add_reaction(__REACT_X)
+
+
+async def _reactions_removeall(message):
+    await message.clear_reactions()
+
+
+# Until there are other things to do when removing from cache, this works
+_cache_cleanup = _reactions_removeall
 
 
 def command_help():
@@ -384,8 +402,8 @@ def _command_details_fromjson(number, search_query, response_json):
         'thumbnail':    {'url': __EMBED_THUMBNAIL_JISHO},
         'fields':       [{'name': __EMBED_DETAILS_FIELD_WORD_NAME, 'value': word, 'inline': True},
                          {'name': __EMBED_DETAILS_FIELD_TAGS_NAME, 'value': tags, 'inline': True},
-                         {'name': (__EMBED_DETAILS_FIELD_DEFINITIONS_NAME, __EMBED_DETAILS_FIELD_DEFINITIONSTRUNC_NAME)[definitions_truncated], 'value': definitions, 'inline': False}]
-                        + ([], [{'name': __EMBED_DETAILS_FIELD_OTHERFORMS_NAME, 'value': other_forms, 'inline': False}])[many_forms]
+                         {'name': __EMBED_DETAILS_FIELD_DEFINITIONSTRUNC_NAME if definitions_truncated else __EMBED_DETAILS_FIELD_DEFINITIONS_NAME, 'value': definitions, 'inline': False}]
+                        + [{'name': __EMBED_DETAILS_FIELD_OTHERFORMS_NAME, 'value': other_forms, 'inline': False}] if many_forms else []
     }
     return discord.Embed.from_dict(embed_dict)
 
@@ -478,7 +496,8 @@ def _log_error(message):  # type: (str) -> None
     :param message: error message to log
     :return:
     """
-    print(message, file=sys.stderr)
+    traceback.print_exc(limit=3, file=sys.stderr)
+
 
 # @bot.command(description="Search jisho.org for results")
 # async def search(ctx, query):
