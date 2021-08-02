@@ -1,4 +1,4 @@
-from typing import Callable
+from typing import Callable, Union
 
 import discord
 
@@ -14,15 +14,29 @@ class Node:
 
 class MessageState:
     """
-    Holds information about a jisho-bot query
+    Holds information about a jisho-bot message
+    """
+    def __init__(self, author, message, callback):
+        self.author: discord.User = author
+        self.message: discord.Message = message
+        self.callback: Callable = callback
+
+    def __str__(self):
+        return f'Message State: author={self.author}, message={self.message}, callback={self.callback}'
+
+    __repr__ = __str__
+
+
+class MessageStateQuery(MessageState):
+    """
+    Holds information about a jisho-bot search query
     """
     def __init__(self, author, query, response, message, offset, callback):
-        self.author: discord.User = author
+        super().__init__(author, message, callback)
+
         self.query: str = query
         self.response: dict = response
-        self.message: discord.Message = message
         self.offset: int = offset
-        self.callback: Callable = callback
 
     def __str__(self):
         return f'Message State: author={self.author}, query={self.query}, response={self.response}, message={self.message}, offset={self.offset}, callback={self.callback}'
@@ -89,7 +103,7 @@ class MessageCache:
             prev.next = None
             self.size -= 1
 
-    def __getitem__(self, item):  # type: (discord.Message) -> MessageState
+    def __getitem__(self, item):  # type: (discord.Message) -> Union[MessageState, MessageStateQuery]
         """
         Finds a message state by using the message as the key
 
@@ -140,7 +154,12 @@ class MessageCache:
         self.head = self.head.next
         self.size -= 1
 
-    def print_status(self):
+    def print_status(self):  # type: () -> None
+        """
+        Debugging helper method for printing the status of the message cache
+
+        :return: nothing
+        """
         print(f'Message Cache: {self.size} items stored out of a max of {self.maxsize}')
         i = 0
         curr = self.head
@@ -149,16 +168,3 @@ class MessageCache:
             i += 1
             curr = curr.next
 
-
-# class MessageCacheNaive:
-#     def __init__(self):
-#         self.cache = {}
-#
-#     def __getitem__(self, item):
-#         return self.cache[item]
-#
-#     def insert(self, messagestate):  # type: (MessageState) -> None
-#         self.cache[messagestate.message] = messagestate
-#
-#     def remove(self, message):
-#         self.cache.pop(message)
