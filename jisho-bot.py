@@ -9,6 +9,8 @@ import urllib
 import sys
 from messageState import *
 from discord.ext import commands
+import asyncio
+import aiohttp
 
 # todo list
 #  multi-threading?
@@ -29,7 +31,6 @@ __EMOJI_NUMS = {1: ':one:', 2: ':two:', 3: ':three:', 4: ':four:', 5: ':five:'}
 __PING_RESPONSE = ':ping_pong: Pong! :ping_pong:'
 __ERROR_BADSTATUS_STEM = 'Bad response status - expected 200 OK, got {status} instead'
 __ERROR_INDEXERROR_STEM = 'Unable to find result number {number} for {query}'
-__ERROR_INCORRECTARGS_STEM = 'Incorrect arguments - correct syntax is {syntax}'
 __CACHE_MAXSIZE = 10
 __MESSAGE_LOGIN_STEM = 'Logged in as {user}'
 __MESSAGE_LOGCOMMAND_STEM = 'jisho-bot command by {user}: {command}'
@@ -72,6 +73,7 @@ __COMMAND_PING_ALIAS = 'p'
 __COMMAND_PING_SYNTAX = f'`{__COMMAND_PREFIX} {__COMMAND_PING}`'
 __COMMAND_PING_DESC = f'{__COMMAND_PING_SYNTAX} - Pings jisho-bot to respond with a pong - *alias: `{__COMMAND_PING_ALIAS}`*'
 
+__ERROR_INCORRECTARGS_STEM = 'Incorrect arguments - correct syntax is {syntax}'
 __UNKNOWN_RESPONSE = f'Unrecognized command, try `{__COMMAND_PREFIX} {__COMMAND_HELP}` to see a list of recognized commands'
 
 # Embed constants
@@ -92,7 +94,6 @@ __EMBED_HELP_FIELD_LOOKUP_NAME = '__Lookup commands__'
 __EMBED_HELP_FIELD_LOOKUP_VALUE = '\n'.join([__COMMAND_SEARCH_DESC, __COMMAND_DETAILS_DESC])
 __EMBED_HELP_FIELD_UTILITY_NAME = '__Utility commands__'
 __EMBED_HELP_FIELD_UTILITY_VALUE = '\n'.join([__COMMAND_HELP_DESC, __COMMAND_PING_DESC])
-
 
 __EMBED_SEARCH_TITLE_STEM = 'jisho.org search results for {query}'
 __EMBED_SEARCH_DESCRIPTION_STEM = '*Showing results {start} to {end} (out of {total})*\n'
@@ -119,9 +120,10 @@ __EMBED_DETAILS_TAGS_NONE = '*None*'
 __EMBED_ERROR_TITLE = 'An error has occurred'
 __EMBED_ERROR_FOOTER = 'Please report any unexpected errors'
 
+# Set up variables
 client = discord.Client()
-
 cache = MessageCache(__CACHE_MAXSIZE)
+session = None  # type: aiohttp.ClientSession
 
 # # Bot commands setup (?)
 # intents = discord.Intents.default()
@@ -137,6 +139,9 @@ async def on_ready():  # type: () -> None
     :return: Nothing
     """
     _log_message(__MESSAGE_LOGIN_STEM.format(user=client.user))
+
+    global session
+    session = aiohttp.ClientSession()
 
 
 @client.event
@@ -176,7 +181,7 @@ async def on_message(message):  # type: (discord.Message) -> None
 
             query = ' '.join(command_tokens[2:])
 
-            embed, response_json, found_results = command_search(query)
+            embed, response_json, found_results = await command_search(query)
             bot_message = await message.channel.send(embed=embed)
             if found_results:
                 await _addreactions_search(bot_message, response_json)
@@ -204,7 +209,7 @@ async def on_message(message):  # type: (discord.Message) -> None
 
             query = ' '.join(command_tokens[3:])
 
-            embed, response_json = command_details(number, query)
+            embed, response_json = await command_details(number, query)
             bot_message = await message.channel.send(embed=embed)
             await _addreactions_details(bot_message)
             await cache.insert(MessageStateQuery(message.author, message.content, response_json, bot_message, number - (number % __RESULTS_PER_PAGE), _cache_cleanup))
@@ -287,6 +292,8 @@ async def on_reaction_add(reaction, user):  # type: (discord.Reaction, discord.U
         await _report_error(reaction.message.channel, reaction.message.author, str(e))
 
 
+# Reaction helper methods
+
 async def _addreactions_xonly(message):  # type: (discord.Message) -> None
     """
     Adds an x reaction to clear a sent embed
@@ -346,6 +353,8 @@ async def _removereactions_all(message):  # type: (discord.Message) -> None
 _cache_cleanup = _removereactions_all
 
 
+# Command functions
+
 def command_help():  # type: () -> discord.Embed
     """
     Builds a help embed
@@ -364,7 +373,7 @@ def command_help():  # type: () -> discord.Embed
     return discord.Embed.from_dict(embed_dict)
 
 
-def command_search(search_query):  # type: (str) -> (discord.Embed, dict, bool)
+async def command_search(search_query):  # type: (str) -> (discord.Embed, dict, bool)
     """
     Queries jisho.org api to get a response json to show search results
 
@@ -372,7 +381,7 @@ def command_search(search_query):  # type: (str) -> (discord.Embed, dict, bool)
     :return: search embed, response json, boolean (True if results were found, False otherwise)
     """
     # Communicate with jisho's beta API
-    response_json = _api_call(search_query)
+    response_json = await _api_call(search_query)
 
     return _command_search_fromjson(search_query, response_json, 0), response_json, bool(len(_get_results_list(response_json)))
 
@@ -415,7 +424,7 @@ def _command_search_fromjson(search_query, response_json, start_from):  # type: 
     return discord.Embed.from_dict(embed_dict)
 
 
-def command_details(number, search_query):  # type: (int, str) -> (discord.Embed, dict)
+async def command_details(number, search_query):  # type: (int, str) -> (discord.Embed, dict)
     """
     Queries jisho.org api to shows details for a search query
 
@@ -424,7 +433,7 @@ def command_details(number, search_query):  # type: (int, str) -> (discord.Embed
     :return: details embed, response json
     """
     # Communicate with jisho's beta API
-    response_json = _api_call(search_query)
+    response_json = await _api_call(search_query)
 
     if number < 0 or number >= len(_get_results_list(response_json)):
         raise IndexError(__ERROR_INDEXERROR_STEM.format(number=number + 1, query=search_query))
@@ -560,7 +569,9 @@ def command_unknown():  # type: () -> str
     return __UNKNOWN_RESPONSE
 
 
-def _api_call(query):  # type: (str) -> dict
+# Other helper functions
+
+async def _api_call(query):  # type: (str) -> dict
     """
     Helper method to do jisho.org's API call
 
@@ -568,8 +579,9 @@ def _api_call(query):  # type: (str) -> dict
     :return: JSON response
     :raises ValueError: status code is not 200 OK
     """
-    response_json = requests.get(__API_SEARCH_STEM.format(query=query)).json()
-    status_code = response_json['meta']['status']
+    async with session.get(__API_SEARCH_STEM.format(query=query)) as response:
+        status_code = response.status
+        response_json = await response.json()
 
     if status_code != __STATUS_OK:
         raise ValueError(__ERROR_BADSTATUS_STEM.format(status=status_code))
@@ -611,6 +623,8 @@ def _form_readable(form):  # type: (dict) -> str
     else:
         return form['reading']
 
+
+# Error and message logging helper functions
 
 async def _report_error(channel, author, error_message):  # type: (discord.TextChannel, discord.User, str) -> None
     """
