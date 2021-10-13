@@ -21,7 +21,7 @@ import aiohttp
 #  work in dms
 
 # "Constants"
-__TOKEN_FILENAME = 'token.txt'
+__TOKEN_FILENAME = 'token.txt'  # where the text file only contains the token
 __BOT_DESC = 'wip bot for jisho.org'
 __JISHOHOME_URL = 'https://jisho.org'
 __API_SEARCH_STEM = 'https://jisho.org/api/v1/search/words?keyword={query}'
@@ -51,7 +51,7 @@ __REACTS_ALL = __REACTS_ARROWS + __REACTS_NUMS + [__REACT_RETURN, __REACT_X]
 
 # Command strings
 __COMMAND_PREFIX = '!jisho'
-# __COMMAND_PREFIX_ALIAS = '!j'
+__COMMAND_PREFIX_ALIAS = '!j'
 
 __COMMAND_HELP = 'help'
 __COMMAND_HELP_ALIAS = 'h'
@@ -86,6 +86,7 @@ __LINK_BASE = 'jisho.org'
 __LINK_SEARCH = 'search'
 __LINK_DETAILS = 'word'
 __LINK_KANJI = '%23kanji'  # or '#kanji'
+__LINK_SLUGSEARCH_STEM = '&slug={slug}'
 __ERROR_LINK_NOTJISHO = 'Not a recognized jisho.org link'
 __ERROR_LINK_NOTYPE = 'Unable to analyze link (error: NOTYPE)'
 __ERROR_LINK_NOQUERY = 'Unable to determine search query'
@@ -139,6 +140,7 @@ __EMBED_ERROR_FOOTER = 'Please report any unexpected errors'
 client = discord.Client()
 cache = MessageCache(__CACHE_MAXSIZE)
 session = None  # type: aiohttp.ClientSession
+help_embed = None  # type: discord.Embed
 
 # # Bot commands setup (?)
 # intents = discord.Intents.default()
@@ -155,8 +157,9 @@ async def on_ready():  # type: () -> None
     """
     _log_message(__MESSAGE_LOGIN_STEM.format(user=client.user))
 
-    global session
+    global session, help_embed
     session = aiohttp.ClientSession()
+    help_embed = _command_help_embed()
 
 
 @client.event
@@ -171,117 +174,48 @@ async def on_message(message):  # type: (discord.Message) -> None
     if message.author == client.user:
         return
 
-    # Tokenize message
-    command_tokens = message.content.rstrip().split()
+    # Tokenize message, ignore empty messages (images)
+    tokens = message.content.rstrip().split()
+    if not len(tokens):
+        return
 
     # Log commands for jisho-bot, ignore others
-    if command_tokens[0].lower() == __COMMAND_PREFIX:
+    if tokens[0].lower() in (__COMMAND_PREFIX, __COMMAND_PREFIX_ALIAS):
         _log_message(__MESSAGE_LOGCOMMAND_STEM.format(user=message.author, command=message.content))
     else:
         return
 
-    try: # todo split all of these into their own functions
+    try:
         # No command - suggest help
-        if len(command_tokens) == 1:
-            await message.channel.send(command_unknown())
+        if len(tokens) == 1:
+            await command_unknown(message)
             return
 
-        # Testing - respond to messages "!jisho ping" with "pong"
-        if command_tokens[1].lower() in (__COMMAND_PING, __COMMAND_PING_ALIAS):
-            await message.channel.send(command_ping())
+        command = tokens[1].lower()
 
         # Command - search - look for responses from jisho.org api
-        elif command_tokens[1].lower() in (__COMMAND_SEARCH, __COMMAND_SEARCH_ALIAS):
-            if len(command_tokens) < 3:
-                raise SyntaxError(__ERROR_INCORRECTARGS_STEM.format(syntax=__COMMAND_SEARCH_SYNTAX))
-
-            query = ' '.join(command_tokens[2:])
-
-            embed, response_json, found_results = await command_search(query)
-            bot_message = await message.channel.send(embed=embed)
-            if found_results:
-                await _addreactions_search(bot_message, response_json)
-            else:
-                await _addreactions_xonly(bot_message)
-
-            await cache.insert(MessageStateQuery(message.author, query, response_json, bot_message, 0, _cache_cleanup))
-
-        # Command - help - shows help message
-        elif command_tokens[1].lower() in (__COMMAND_HELP, __COMMAND_HELP_ALIAS):
-            embed = command_help()
-            bot_message = await message.channel.send(embed=embed)
-            await _addreactions_xonly(bot_message)
-            await cache.insert(MessageState(message.author, bot_message, _cache_cleanup))
+        if command in (__COMMAND_SEARCH, __COMMAND_SEARCH_ALIAS):
+            await command_search(message, tokens[2:])
 
         # Command - details - show result details
-        elif command_tokens[1].lower() in (__COMMAND_DETAILS, __COMMAND_DETAILS_ALIAS):
-            if len(command_tokens) < 4:
-                raise SyntaxError(__ERROR_INCORRECTARGS_STEM.format(syntax=__COMMAND_DETAILS_SYNTAX))
-
-            try:
-                number = int(command_tokens[2]) - 1
-            except ValueError:
-                raise SyntaxError(__ERROR_INCORRECTARGS_STEM.format(syntax=__COMMAND_DETAILS_SYNTAX))
-
-            query = ' '.join(command_tokens[3:])
-
-            embed, response_json = await command_details(number, query)
-            bot_message = await message.channel.send(embed=embed)
-            await _addreactions_details(bot_message)
-            await cache.insert(MessageStateQuery(message.author, message.content, response_json, bot_message, number - (number % __RESULTS_PER_PAGE), _cache_cleanup))
+        elif command in (__COMMAND_DETAILS, __COMMAND_DETAILS_ALIAS):
+            await command_details(message, tokens[2:])
 
         # Command - link - analyze jisho.org link
-        elif command_tokens[1].lower() in (__COMMAND_LINK, __COMMAND_LINK_ALIAS):
-            if len(command_tokens) < 3:
-                raise SyntaxError(__ERROR_INCORRECTARGS_STEM.format(syntax=__COMMAND_LINK_SYNTAX))
+        elif command in (__COMMAND_LINK, __COMMAND_LINK_ALIAS):
+            await command_link(message, tokens[2:])
 
-            # Split link into sections, by '/'
-            link = command_tokens[2]
-            link_split = link.split('/')
+        # Command - help - shows help message
+        elif command in (__COMMAND_HELP, __COMMAND_HELP_ALIAS):
+            await command_help(message)
 
-            # Find 'jisho.org' in link, discard that and before parts
-            base_index = -1
-            for i in range(len(link_split)):
-                if __LINK_BASE in link_split[i].lower():
-                    base_index = i
-                    break
-            else:
-                raise SyntaxError(__ERROR_LINK_NOTJISHO)
-            link_split = link_split[base_index+1:]
+        # Command - ping - respond to messages "!jisho ping" with "pong"
+        elif command in (__COMMAND_PING, __COMMAND_PING_ALIAS):
+            await command_ping(message)
 
-            if len(link_split) < 2:
-                raise SyntaxError(__ERROR_LINK_NOQUERY)
-
-            # Find type of jisho.org link (search/word)
-            if link_split[0].lower() == __LINK_SEARCH:
-                query = link_split[1]
-
-                if __LINK_KANJI in query:
-                    raise SyntaxError(__ERROR_LINK_NOKANJI)
-
-                embed, response_json, found_results = await command_search(query)
-                bot_message = await message.channel.send(embed=embed)
-                if found_results:
-                    await _addreactions_search(bot_message, response_json)
-                else:
-                    await _addreactions_xonly(bot_message)
-
-                await cache.insert(MessageStateQuery(message.author, query, response_json, bot_message, 0, _cache_cleanup))
-
-            elif link_split[0].lower() == __LINK_DETAILS:
-                query = '&slug=' + link_split[1]
-                number = 0
-
-                embed, response_json = await command_details(number, query)
-                bot_message = await message.channel.send(embed=embed)
-                await _addreactions_details(bot_message)
-                await cache.insert(MessageStateQuery(message.author, message.content, response_json, bot_message, number - (number % __RESULTS_PER_PAGE), _cache_cleanup))  # todo weird behavior when going back to results page
-
-            else:
-                raise SyntaxError(__ERROR_LINK_NOTYPE)
         # Unknown command - suggest help
         else:
-            await message.channel.send(command_unknown())
+            await command_unknown(message)
 
     except Exception as e:
         await _report_error(message.channel, message.author, str(e))
@@ -328,7 +262,7 @@ async def on_reaction_add(reaction, user):  # type: (discord.Reaction, discord.U
             if number + messagestate.offset >= len(_get_results_list(messagestate.response)):
                 return
 
-            new_embed = _command_details_fromjson(number + messagestate.offset, messagestate.query, messagestate.response)
+            new_embed = _command_details_embedfromjson(number + messagestate.offset, messagestate.query, messagestate.response)
             await reaction.message.edit(embed=new_embed)
             await _removereactions_all(reaction.message)
             await _addreactions_details(reaction.message)
@@ -342,13 +276,13 @@ async def on_reaction_add(reaction, user):  # type: (discord.Reaction, discord.U
                 return
 
             cache[reaction.message].offset += delta
-            new_embed = _command_search_fromjson(messagestate.query, messagestate.response, messagestate.offset)
+            new_embed = _command_search_embedfromjson(messagestate.query, messagestate.response, messagestate.offset)
             await reaction.message.edit(embed=new_embed)
             await reaction.message.remove_reaction(reaction.emoji, user)
 
         # Go back
         if reaction.emoji == __REACT_RETURN:
-            new_embed = _command_search_fromjson(messagestate.query, messagestate.response, messagestate.offset)
+            new_embed = _command_search_embedfromjson(messagestate.query, messagestate.response, messagestate.offset)
             await reaction.message.edit(embed=new_embed)
             await _removereactions_all(reaction.message)
             await _addreactions_search(reaction.message, messagestate.response)
@@ -418,27 +352,34 @@ async def _removereactions_all(message):  # type: (discord.Message) -> None
 _cache_cleanup = _removereactions_all
 
 
-# Command functions
+# Command functions - lookup
 
-def command_help():  # type: () -> discord.Embed
+async def command_search(message, tokens):  # type: (discord.Message, list) -> None
     """
-    Builds a help embed
+    Handles a search command
 
-    :return: Help embed
+    :param message: message that requested a search
+    :param tokens: additional arguments (search query)
     """
-    # Build embed
-    embed_dict = {
-        'title':    __EMBED_HELP_TITLE,
-        'color':    __EMBED_COLOR_BOT,
-        'footer':   {'text': __EMBED_HELP_FOOTER},
-        'fields':   [{'name': __EMBED_HELP_FIELD_ABOUT_NAME, 'value': __EMBED_HELP_FIELD_ABOUT_VALUE, 'inline': False},
-                     {'name': __EMBED_HELP_FIELD_LOOKUP_NAME, 'value': __EMBED_HELP_FIELD_LOOKUP_VALUE, 'inline': False},
-                     {'name': __EMBED_HELP_FIELD_UTILITY_NAME, 'value': __EMBED_HELP_FIELD_UTILITY_VALUE, 'inline': False}]
-    }
-    return discord.Embed.from_dict(embed_dict)
+    # Verify query exists
+    if not len(tokens):
+        raise SyntaxError(__ERROR_INCORRECTARGS_STEM.format(syntax=__COMMAND_SEARCH_SYNTAX))
+
+    query = ' '.join(tokens)
+
+    # Build embed, send message, add reactions
+    embed, response_json, found_results = await command_search_embed(query)
+    bot_message = await message.channel.send(embed=embed)
+    if found_results:
+        await _addreactions_search(bot_message, response_json)
+    else:
+        await _addreactions_xonly(bot_message)
+
+    # Add to message cache
+    await cache.insert(MessageStateQuery(message.author, query, response_json, bot_message, 0, _cache_cleanup))
 
 
-async def command_search(search_query):  # type: (str) -> (discord.Embed, dict, bool)
+async def command_search_embed(search_query):  # type: (str) -> (discord.Embed, dict, bool)
     """
     Queries jisho.org api to get a response json to show search results
 
@@ -448,10 +389,10 @@ async def command_search(search_query):  # type: (str) -> (discord.Embed, dict, 
     # Communicate with jisho's beta API
     response_json = await _api_call(search_query)
 
-    return _command_search_fromjson(search_query, response_json, 0), response_json, bool(len(_get_results_list(response_json)))
+    return _command_search_embedfromjson(search_query, response_json, 0), response_json, bool(len(_get_results_list(response_json)))
 
 
-def _command_search_fromjson(search_query, response_json, start_from):  # type: (str, dict, int) -> discord.Embed
+def _command_search_embedfromjson(search_query, response_json, start_from):  # type: (str, dict, int) -> discord.Embed
     """
     Builds a search results embed from a response json
 
@@ -489,7 +430,34 @@ def _command_search_fromjson(search_query, response_json, start_from):  # type: 
     return discord.Embed.from_dict(embed_dict)
 
 
-async def command_details(number, search_query):  # type: (int, str) -> (discord.Embed, dict)
+async def command_details(message, tokens):  # type: (discord.Message, list) -> None
+    """
+    Handles a details command
+
+    :param message: message that requested details
+    :param tokens: additional arguments (result number, search query)
+    """
+    # Verify the number of tokens, number is a number
+    if len(tokens) < 2:
+        raise SyntaxError(__ERROR_INCORRECTARGS_STEM.format(syntax=__COMMAND_DETAILS_SYNTAX))
+    try:
+        number = int(tokens[0]) - 1
+    except ValueError:
+        raise SyntaxError(__ERROR_INCORRECTARGS_STEM.format(syntax=__COMMAND_DETAILS_SYNTAX))
+
+    query = ' '.join(tokens[1:])
+
+    # Build embed, send message, and add reactions
+    embed, response_json = await _command_details_embed(number, query)
+    bot_message = await message.channel.send(embed=embed)
+    await _addreactions_details(bot_message)
+
+    # Add to message cache
+    await cache.insert(MessageStateQuery(message.author, query, response_json, bot_message,
+                                         number - (number % __RESULTS_PER_PAGE), _cache_cleanup))
+
+
+async def _command_details_embed(number, search_query):  # type: (int, str) -> (discord.Embed, dict)
     """
     Queries jisho.org api to shows details for a search query
 
@@ -500,13 +468,14 @@ async def command_details(number, search_query):  # type: (int, str) -> (discord
     # Communicate with jisho's beta API
     response_json = await _api_call(search_query)
 
+    # Make sure the result number we're looking for exists
     if number < 0 or number >= len(_get_results_list(response_json)):
         raise IndexError(__ERROR_INDEXERROR_STEM.format(number=number + 1, query=search_query))
 
-    return _command_details_fromjson(number, search_query, response_json), response_json
+    return _command_details_embedfromjson(number, search_query, response_json), response_json
 
 
-def _command_details_fromjson(number, search_query, response_json):  # type: (int, str, dict) -> discord.Embed
+def _command_details_embedfromjson(number, search_query, response_json):  # type: (int, str, dict) -> discord.Embed
     """
     Builds a details embed from a response json
 
@@ -618,22 +587,104 @@ def _command_details_fromjson(number, search_query, response_json):  # type: (in
     return discord.Embed.from_dict(embed_dict)
 
 
-def command_ping():  # type: () -> str
+async def command_link(message, tokens):  # type: (discord.Message, list) -> None
     """
-    Returns ping response
+    Processes a link analysis command
 
-    :return: ping response
+    :param message: message that requested link analysis
+    :param tokens: additional arguments (link url)
     """
-    return __PING_RESPONSE
+    # Check if there is a url to analyze
+    if not len(tokens):
+        raise SyntaxError(__ERROR_INCORRECTARGS_STEM.format(syntax=__COMMAND_LINK_SYNTAX))
+
+    # Split link into sections, by '/'
+    link_split = tokens[0].split('/')
+
+    # Find 'jisho.org' in link, discard that and before parts
+    for i in range(len(link_split)):
+        if __LINK_BASE in link_split[i].lower():
+            base_index = i
+            break
+    else:
+        raise SyntaxError(__ERROR_LINK_NOTJISHO)
+    link_split = link_split[base_index + 1:]
+
+    # Make sure there's a /word or /search after jisho.org (not just the homepage)
+    if len(link_split) < 2:
+        raise SyntaxError(__ERROR_LINK_NOQUERY)
+
+    # Handle a search query (jisho.org/search)
+    if link_split[0].lower() == __LINK_SEARCH:
+        # Get search query, make sure it's not a kanji details page
+        query = link_split[1]
+        if __LINK_KANJI in query:
+            raise SyntaxError(__ERROR_LINK_NOKANJI)
+
+        # Hand over to function to complete search
+        await command_search(message, query)
+
+    # Display word details (jisho.org/word)
+    elif link_split[0].lower() == __LINK_DETAILS:
+        # Query the API directly by slug, guaranteed (?) one result, hand over to function to complete
+        query = __LINK_SLUGSEARCH_STEM.format(slug=link_split[1])
+        await command_details(message, [1, query])
+
+    else:
+        raise SyntaxError(__ERROR_LINK_NOTYPE)
 
 
-def command_unknown():  # type: () -> str
+# Command functions - utility, other
+
+async def command_ping(message):  # type: (discord.Message) -> None
     """
-    Returns unknown command response
+    Processes a ping command
 
-    :return: ping response
+    :param message: message that requested ping
     """
-    return __UNKNOWN_RESPONSE
+    await message.channel.send(__PING_RESPONSE)
+
+
+async def command_help(message):  # type: (discord.Message) -> None
+    """
+    Processes a help command
+
+    :param message: message that requested help
+    """
+    # Build embed, send message, and add reactions
+    bot_message = await message.channel.send(embed=help_embed)
+    await _addreactions_xonly(bot_message)
+
+    # Add to message cache
+    await cache.insert(MessageState(message.author, bot_message, _cache_cleanup))
+
+
+def _command_help_embed():  # type: () -> discord.Embed
+    """
+    Builds a help embed
+
+    :return: Help embed
+    """
+    # Build embed
+    embed_dict = {
+        'title': __EMBED_HELP_TITLE,
+        'color': __EMBED_COLOR_BOT,
+        'footer': {'text': __EMBED_HELP_FOOTER},
+        'fields': [{'name': __EMBED_HELP_FIELD_ABOUT_NAME, 'value': __EMBED_HELP_FIELD_ABOUT_VALUE, 'inline': False},
+                   {'name': __EMBED_HELP_FIELD_LOOKUP_NAME, 'value': __EMBED_HELP_FIELD_LOOKUP_VALUE, 'inline': False},
+                   {'name': __EMBED_HELP_FIELD_UTILITY_NAME, 'value': __EMBED_HELP_FIELD_UTILITY_VALUE,
+                    'inline': False}]
+    }
+    return discord.Embed.from_dict(embed_dict)
+
+
+async def command_unknown(message):  # type: (discord.Message) -> None
+    """
+    Handles an unknown command
+
+    :param message: message with unknown command
+    """
+    await message.channel.send(__UNKNOWN_RESPONSE)
 
 
 # Other helper functions
