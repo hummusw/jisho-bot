@@ -73,8 +73,23 @@ __COMMAND_PING_ALIAS = 'p'
 __COMMAND_PING_SYNTAX = f'`{__COMMAND_PREFIX} {__COMMAND_PING}`'
 __COMMAND_PING_DESC = f'{__COMMAND_PING_SYNTAX} - Pings jisho-bot to respond with a pong - *alias: `{__COMMAND_PING_ALIAS}`*'
 
+__COMMAND_LINK = 'link'
+__COMMAND_LINK_ALIAS = 'l'
+__COMMAND_LINK_SYNTAX = f'`{__COMMAND_PREFIX} {__COMMAND_LINK} <link>`'
+__COMMAND_LINK_DESC = f'{__COMMAND_LINK_SYNTAX} - Analyzes a jisho.org link and tries to show details - *alias: `{__COMMAND_LINK_ALIAS}`*'
+
 __ERROR_INCORRECTARGS_STEM = 'Incorrect arguments - correct syntax is {syntax}'
 __UNKNOWN_RESPONSE = f'Unrecognized command, try `{__COMMAND_PREFIX} {__COMMAND_HELP}` to see a list of recognized commands'
+
+# Link analysis constants
+__LINK_BASE = 'jisho.org'
+__LINK_SEARCH = 'search'
+__LINK_DETAILS = 'word'
+__LINK_KANJI = '%23kanji'  # or '#kanji'
+__ERROR_LINK_NOTJISHO = 'Not a recognized jisho.org link'
+__ERROR_LINK_NOTYPE = 'Unable to analyze link (error: NOTYPE)'
+__ERROR_LINK_NOQUERY = 'Unable to determine search query'
+__ERROR_LINK_NOKANJI = 'Kanji data not currently supported by API'
 
 # Embed constants
 __EMBED_THUMBNAIL_JISHO = 'https://assets.jisho.org/assets/touch-icon-017b99ca4bfd11363a97f66cc4c00b1667613a05e38d08d858aa5e2a35dce055.png'
@@ -91,7 +106,7 @@ __EMBED_HELP_FIELD_ABOUT_NAME = '__About__'
 __EMBED_HELP_FIELD_ABOUT_VALUE = 'jisho-bot is currently a work-in-progress bot that searches jisho.org directly ' \
                                  + f'from Discord, powered by [jisho.org]({__JISHOHOME_URL})\'s beta API.'
 __EMBED_HELP_FIELD_LOOKUP_NAME = '__Lookup commands__'
-__EMBED_HELP_FIELD_LOOKUP_VALUE = '\n'.join([__COMMAND_SEARCH_DESC, __COMMAND_DETAILS_DESC])
+__EMBED_HELP_FIELD_LOOKUP_VALUE = '\n'.join([__COMMAND_SEARCH_DESC, __COMMAND_DETAILS_DESC, __COMMAND_LINK_DESC])
 __EMBED_HELP_FIELD_UTILITY_NAME = '__Utility commands__'
 __EMBED_HELP_FIELD_UTILITY_VALUE = '\n'.join([__COMMAND_HELP_DESC, __COMMAND_PING_DESC])
 
@@ -160,22 +175,23 @@ async def on_message(message):  # type: (discord.Message) -> None
     command_tokens = message.content.rstrip().split()
 
     # Log commands for jisho-bot, ignore others
-    if command_tokens[0] == __COMMAND_PREFIX:
+    if command_tokens[0].lower() == __COMMAND_PREFIX:
         _log_message(__MESSAGE_LOGCOMMAND_STEM.format(user=message.author, command=message.content))
     else:
         return
 
-    try:
+    try: # todo split all of these into their own functions
         # No command - suggest help
         if len(command_tokens) == 1:
             await message.channel.send(command_unknown())
+            return
 
         # Testing - respond to messages "!jisho ping" with "pong"
-        if command_tokens[1] in (__COMMAND_PING, __COMMAND_PING_ALIAS):
+        if command_tokens[1].lower() in (__COMMAND_PING, __COMMAND_PING_ALIAS):
             await message.channel.send(command_ping())
 
         # Command - search - look for responses from jisho.org api
-        elif command_tokens[1] in (__COMMAND_SEARCH, __COMMAND_SEARCH_ALIAS):
+        elif command_tokens[1].lower() in (__COMMAND_SEARCH, __COMMAND_SEARCH_ALIAS):
             if len(command_tokens) < 3:
                 raise SyntaxError(__ERROR_INCORRECTARGS_STEM.format(syntax=__COMMAND_SEARCH_SYNTAX))
 
@@ -191,14 +207,14 @@ async def on_message(message):  # type: (discord.Message) -> None
             await cache.insert(MessageStateQuery(message.author, query, response_json, bot_message, 0, _cache_cleanup))
 
         # Command - help - shows help message
-        elif command_tokens[1] in (__COMMAND_HELP, __COMMAND_HELP_ALIAS):
+        elif command_tokens[1].lower() in (__COMMAND_HELP, __COMMAND_HELP_ALIAS):
             embed = command_help()
             bot_message = await message.channel.send(embed=embed)
             await _addreactions_xonly(bot_message)
             await cache.insert(MessageState(message.author, bot_message, _cache_cleanup))
 
         # Command - details - show result details
-        elif command_tokens[1] in (__COMMAND_DETAILS, __COMMAND_DETAILS_ALIAS):
+        elif command_tokens[1].lower() in (__COMMAND_DETAILS, __COMMAND_DETAILS_ALIAS):
             if len(command_tokens) < 4:
                 raise SyntaxError(__ERROR_INCORRECTARGS_STEM.format(syntax=__COMMAND_DETAILS_SYNTAX))
 
@@ -214,6 +230,55 @@ async def on_message(message):  # type: (discord.Message) -> None
             await _addreactions_details(bot_message)
             await cache.insert(MessageStateQuery(message.author, message.content, response_json, bot_message, number - (number % __RESULTS_PER_PAGE), _cache_cleanup))
 
+        # Command - link - analyze jisho.org link
+        elif command_tokens[1].lower() in (__COMMAND_LINK, __COMMAND_LINK_ALIAS):
+            if len(command_tokens) < 3:
+                raise SyntaxError(__ERROR_INCORRECTARGS_STEM.format(syntax=__COMMAND_LINK_SYNTAX))
+
+            # Split link into sections, by '/'
+            link = command_tokens[2]
+            link_split = link.split('/')
+
+            # Find 'jisho.org' in link, discard that and before parts
+            base_index = -1
+            for i in range(len(link_split)):
+                if __LINK_BASE in link_split[i].lower():
+                    base_index = i
+                    break
+            else:
+                raise SyntaxError(__ERROR_LINK_NOTJISHO)
+            link_split = link_split[base_index+1:]
+
+            if len(link_split) < 2:
+                raise SyntaxError(__ERROR_LINK_NOQUERY)
+
+            # Find type of jisho.org link (search/word)
+            if link_split[0].lower() == __LINK_SEARCH:
+                query = link_split[1]
+
+                if __LINK_KANJI in query:
+                    raise SyntaxError(__ERROR_LINK_NOKANJI)
+
+                embed, response_json, found_results = await command_search(query)
+                bot_message = await message.channel.send(embed=embed)
+                if found_results:
+                    await _addreactions_search(bot_message, response_json)
+                else:
+                    await _addreactions_xonly(bot_message)
+
+                await cache.insert(MessageStateQuery(message.author, query, response_json, bot_message, 0, _cache_cleanup))
+
+            elif link_split[0].lower() == __LINK_DETAILS:
+                query = '&slug=' + link_split[1]
+                number = 0
+
+                embed, response_json = await command_details(number, query)
+                bot_message = await message.channel.send(embed=embed)
+                await _addreactions_details(bot_message)
+                await cache.insert(MessageStateQuery(message.author, message.content, response_json, bot_message, number - (number % __RESULTS_PER_PAGE), _cache_cleanup))  # todo weird behavior when going back to results page
+
+            else:
+                raise SyntaxError(__ERROR_LINK_NOTYPE)
         # Unknown command - suggest help
         else:
             await message.channel.send(command_unknown())
@@ -463,9 +528,11 @@ def _command_details_fromjson(number, search_query, response_json):  # type: (in
     definitions_json = details_json['senses']
     for i in range(len(definitions_json)):
         def_json = definitions_json[i]
+        definition = ''
 
-        # First add parts of speech, italicized
-        definition = f'*{", ".join(def_json["parts_of_speech"])}*\n'
+        # First add parts of speech, italicized if it exists
+        if def_json.get('parts_of_speech'):
+            definition += f'*{", ".join(def_json["parts_of_speech"])}*\n'
 
         # Then add definitions, numbered and bolded
         definition += f'**{i + 1}. {"; ".join(def_json["english_definitions"])}** '
