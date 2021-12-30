@@ -38,7 +38,7 @@ class JishoCog(commands.Cog):
         # Set up variables
         self.cache = MessageCache(CACHE_MAXSIZE)  # type: MessageCache
         self.session = aiohttp.ClientSession()  # type: aiohttp.ClientSession
-        self.help_embed = self._command_help_embed()  # type: discord.Embed
+        # self.help_embed = self._command_help_embed()  # type: discord.Embed
 
         self._log_message(MESSAGE_LOGIN)
 
